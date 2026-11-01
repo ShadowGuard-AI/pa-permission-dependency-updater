@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import logging
-import os
 import sys
 from typing import Dict, List, Set, Tuple
 
 try:
-    import pathspec
     from rich.console import Console
     from rich.table import Column, Table
 except ImportError as e:
-    print(f"Error: Missing dependencies. Please install them using: pip install pathspec rich")
+    print(f"Error: Missing dependencies. Please install them using: pip install rich")
     sys.exit(1)
 
 
@@ -20,7 +19,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class PermissionDependencyUpdater:
     """
-    Identifies dependencies between permissions and updates dependent permissions.
+    Identifies dependencies between permissions and simulates updates to
+    dependent permissions. This is a preview only: no permission
+    configuration is changed by this tool.
     """
 
     def __init__(self, permission_map: Dict[str, Set[str]]):
@@ -55,7 +56,9 @@ class PermissionDependencyUpdater:
 
     def update_dependent_permissions(self, permission: str, change_description: str) -> None:
         """
-        Recursively updates all permissions that depend on a given permission.
+        Recursively simulates updates to all permissions that depend on a given permission.
+        Nothing is modified; the tables printed are a preview of which
+        permissions would be affected by the change.
 
         Args:
             permission: The permission that has been modified or deprecated.
@@ -68,9 +71,9 @@ class PermissionDependencyUpdater:
             logging.info(f"No permissions depend on '{permission}'. No updates needed.")
             return
 
-        logging.info(f"Updating dependent permissions for '{permission}' due to: {change_description}")
+        logging.info(f"Simulating updates to dependent permissions for '{permission}' due to: {change_description}")
 
-        table = Table(title=f"Permissions Updated due to '{permission}' Change")
+        table = Table(title=f"Simulated Permission Updates due to '{permission}' Change (preview only, nothing was changed)")
         table.add_column("Permission", style="cyan", no_wrap=True)
         table.add_column("Change Description", style="magenta")
 
@@ -110,7 +113,7 @@ def setup_argparse() -> argparse.ArgumentParser:
         An argparse.ArgumentParser object.
     """
     parser = argparse.ArgumentParser(
-        description="Identifies and updates dependent permissions based on changes to underlying permissions."
+        description="Identifies dependent permissions and simulates (previews) updates based on changes to underlying permissions. Simulation only: no permission configuration is changed."
     )
 
     parser.add_argument(
@@ -125,6 +128,14 @@ def setup_argparse() -> argparse.ArgumentParser:
         type=str,
         required=True,
         help="A description of the change that occurred (e.g., 'deprecated', 'modified')."
+    )
+
+    parser.add_argument(
+        "--map-file",
+        type=str,
+        required=False,
+        default=None,
+        help="Path to a JSON file holding the permission map: an object mapping each permission name to a list of the permissions it depends on. When omitted, a small built in example map is used."
     )
 
     return parser
@@ -159,26 +170,80 @@ def validate_permission_map(permission_map: Dict[str, Set[str]]) -> bool:
     return True
 
 
+def load_permission_map(map_file: str) -> Dict[str, Set[str]]:
+    """
+    Loads a permission map from a JSON file.
+
+    The file must hold a JSON object mapping each permission name to a
+    list of the permission names it depends on.
+
+    Raises:
+        OSError: If the file cannot be read.
+        ValueError: If the file does not hold a map of that shape.
+    """
+    with open(map_file, "r") as f:
+        raw = json.load(f)
+
+    if not isinstance(raw, dict):
+        raise ValueError("Permission map file must hold a JSON object.")
+
+    permission_map: Dict[str, Set[str]] = {}
+    for permission, dependencies in raw.items():
+        if not isinstance(dependencies, list) or not all(
+            isinstance(dep, str) for dep in dependencies
+        ):
+            raise ValueError(
+                f"Dependencies for {permission} must be a list of permission names."
+            )
+        permission_map[permission] = set(dependencies)
+    return permission_map
+
+
+def permission_known(permission_map: Dict[str, Set[str]], permission: str) -> bool:
+    """
+    Returns True when the permission appears anywhere in the map, either
+    as a permission name or as a dependency of another permission.
+    """
+    if permission in permission_map:
+        return True
+    return any(permission in deps for deps in permission_map.values())
+
+
 def main() -> None:
     """
-    Main function to execute the permission dependency updater.
+    Main function to execute the permission dependency update simulation.
     """
     parser = setup_argparse()
     args = parser.parse_args()
 
 
-    # Example permission map (replace with your actual permission data)
-    permission_map: Dict[str, Set[str]] = {
-        "read_sensitive_data": {"authenticate_user"},
-        "write_sensitive_data": {"read_sensitive_data", "authorize_user"},
-        "admin_access": {"write_sensitive_data"},
-        "authorize_user": {"authenticate_user"},
-        "authenticate_user": set(),  # No dependencies
-        "audit_logs": {"admin_access"}
-    }
+    if args.map_file:
+        try:
+            permission_map = load_permission_map(args.map_file)
+        except (OSError, ValueError) as e:
+            logging.error(f"Could not load permission map from '{args.map_file}': {e}")
+            sys.exit(1)
+    else:
+        # Built in example permission map, used only when no --map-file is given.
+        permission_map: Dict[str, Set[str]] = {
+            "read_sensitive_data": {"authenticate_user"},
+            "write_sensitive_data": {"read_sensitive_data", "authorize_user"},
+            "admin_access": {"write_sensitive_data"},
+            "authorize_user": {"authenticate_user"},
+            "authenticate_user": set(),  # No dependencies
+            "audit_logs": {"admin_access"}
+        }
+        logging.info("No --map-file given. Using the built in example permission map.")
 
     if not validate_permission_map(permission_map):
         logging.error("Invalid permission map. Exiting.")
+        sys.exit(1)
+
+    if not permission_known(permission_map, args.permission):
+        logging.error(
+            f"Permission '{args.permission}' not found in the permission map. "
+            "No simulation was run."
+        )
         sys.exit(1)
 
     updater = PermissionDependencyUpdater(permission_map)
@@ -188,6 +253,8 @@ def main() -> None:
     except Exception as e:
         logging.error(f"An error occurred: {e}")
         sys.exit(1)
+
+    logging.info("Simulation only: no permission configuration was changed.")
 
 
 if __name__ == "__main__":
