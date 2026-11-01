@@ -65,6 +65,8 @@ class PermissionDependencyUpdater:
             change_description: A description of the change that occurred (e.g., "deprecated", "modified").
         """
 
+        # Every level of the walk rescans the whole map to find its dependents. Fine at example
+        # size, and the cost grows with the square of the map on a real one.
         dependent_permissions = self.find_dependent_permissions(permission)
 
         if not dependent_permissions:
@@ -84,9 +86,15 @@ class PermissionDependencyUpdater:
             table.add_row(dependent_permission, change_description)
 
             # Recursively update permissions that depend on the current dependent permission
+            # There is no visited set anywhere on this walk. A cycle in the map recurses until
+            # Python stops it, and a diamond makes me simulate the same permission several times.
+            # The description also grows a new wrapper at each level, so a deep chain ends up
+            # narrating its own history more than the original change.
             self.update_dependent_permissions(dependent_permission, f"Indirectly due to '{permission}' being {change_description}")
 
 
+        # The recursion above runs before this print, so the deeper tables come out first. The
+        # output reads inside out, children before the parent change that caused them.
         self.console.print(table)
 
 
